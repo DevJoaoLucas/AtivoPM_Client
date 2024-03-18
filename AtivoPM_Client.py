@@ -1,70 +1,199 @@
+import threading
 import requests
 import subprocess
 import time
+import win32evtlog
+from datetime import datetime
 
-# Função para obter o status do serviço do Windows
-def get_service_status(service_name):
-    try:
-        output = subprocess.check_output(['sc', 'query', service_name], shell=True)
-        status_lines = [line.strip() for line in output.decode('utf-8', errors='ignore').split('\n') if 'ESTADO' in line]
-        if status_lines:
-            status_info = status_lines[0].split(':')[1].strip().split()[0]
-            status_dict = {"1": "PARADO", "2": "INICIALIZANDO", "3": "PARANDO", "4": "EM EXECUÇÃO"}
-            return status_dict.get(status_info, "DESCONHECIDO")
-        else:
+class Application:
+    def __init__(self):
+        self.mysql_url = "xxxxxx"
+        self.mysql_password = "xxxx"
+        self.monitor_thread = None
+        self.monitoring = False
+        self.read_config()
+        self.start_monitoring()
+
+    def read_config(self):
+        try:
+            with open(r"xxxxxxxxativopmcfg.txt", "r") as f:
+                for line in f:
+                    if line.startswith("Empresa="):
+                        self.empresa = line.split("=")[1].strip()
+                    elif line.startswith("Usuario="):
+                        self.mysql_username = line.split("=")[1].strip()
+        except Exception as e:
+            print(f"Erro ao ler arquivo de configuração: {e}")
+
+    def start_monitoring(self):
+        if not hasattr(self, 'empresa') or not hasattr(self, 'mysql_username'):
+            print("Dados inválidos! Empresa e usuário MySQL devem ser especificados.")
+            return
+
+        self.monitoring = True
+        self.monitor_thread = threading.Thread(target=self.monitor_service)
+        self.monitor_thread.start()
+
+    def monitor_service(self):
+        while self.monitoring:
+            log_name = "LogLog"
+            ultimo_evento, hora_evento = self.get_last_log_event(log_name)
+            service_status_is = self.get_service_status("ISService")
+            service_status_dg = self.get_service_status("PBIEgwService")
+            current_time = time.strftime("%H:%M:%S")
+
+            
+            self.delete_logs_of_current_company("statuserros", self.empresa)
+
+            # Inserir os logs de erro na tabela statuserros
+            error_logs, hora_error = self.get_last_5_error_log_events(log_name)
+            if error_logs:
+                self.insert_error_logs_to_mysql("statuserros", error_logs, hora_error, self.empresa)
+
+            # Inserir os outros logs na tabela status
+            self.insert_mysql_data("status", service_status_is, service_status_dg, ultimo_evento, hora_evento,
+                                   current_time)
+            self.update_mysql_data("status", service_status_is, service_status_dg, ultimo_evento, hora_evento,
+                                   current_time)
+
+            time.sleep(60)
+
+    def get_service_status(self, service_name):
+        try:
+            output = subprocess.check_output(['sc', 'query', service_name], shell=True)
+            status_lines = [line.strip() for line in output.decode('utf-8', errors='ignore').split('\n') if 'ESTADO' in line]
+            if status_lines:
+                status_info = status_lines[0].split(':')[1].strip().split()[0]
+                status_dict = {"1": "PARADO", "2": "INICIALIZANDO", "3": "PARANDO", "4": "EM EXECUÇÃO"}
+                return status_dict.get(status_info, "DESCONHECIDO")
+            else:
+                return "DESCONHECIDO"
+        except Exception as e:
+            print(f"Erro ao obter status do serviço {service_name}: {e}")
             return "DESCONHECIDO"
-    except Exception as e:
-        print(f"Erro ao obter status do serviço {service_name}: {e}")
-        return "DESCONHECIDO"
 
-# Função para inserir dados na tabela do MySQL
-def insert_mysql_data(url, username, password, db_name, table_name, servico, status, hora, empresa):
-    try:
-        query = f"INSERT INTO `{db_name}`.`{table_name}` (`Servico`, `Status`, `Hora`, `Empresa`) VALUES ('{servico}', '{status}', '{hora}', '{empresa}')"
-        response = requests.post(url, data={'sql_query': query}, auth=(username, password))
-        if response.status_code == 200:
-            print("Dados inseridos com sucesso!")
+    def get_last_log_event(self, log_name):
+        handle = win32evtlog.OpenEventLog(None, log_name)
+        flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+        events = []
+
+        try:
+            while True:
+                raw_events = win32evtlog.ReadEventLog(handle, flags, 0)
+                if not raw_events:
+                    break
+                events.extend(raw_events)
+        except Exception as e:
+            print(f"Erro ao ler o log: {e}")
+        finally:
+            win32evtlog.CloseEventLog(handle)
+
+        if events:
+            events.sort(key=lambda event: event.TimeGenerated, reverse=True)
+            ultimo_evento = events[0].StringInserts[0]
+            hora_evento = events[0].TimeGenerated.strftime("%d/%m/%Y %H:%M:%S")
+            return ultimo_evento, hora_evento
         else:
-            print(f"Falha ao inserir dados na tabela: {response.status_code}")
-    except Exception as e:
-        print(f"Falha ao inserir dados na tabela: {e}")
+            print("Erro: Nenhum evento encontrado no log.")
+            return None, None
 
-# Função para excluir dados antigos para uma empresa específica
-def delete_old_data(url, username, password, db_name, table_name, empresa):
-    try:
-        query = f"DELETE FROM `{db_name}`.`{table_name}` WHERE `Empresa` = '{empresa}'"
-        response = requests.post(url, data={'sql_query': query}, auth=(username, password))
-        if response.status_code == 200:
-            print("Dados antigos excluídos com sucesso!")
+    def get_last_5_error_log_events(self, log_name):
+        handle = win32evtlog.OpenEventLog(None, log_name)
+        flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+        events = []
+
+        try:
+            while True:
+                raw_events = win32evtlog.ReadEventLog(handle, flags, 0)
+                if not raw_events:
+                    break
+                events.extend(raw_events)
+        except Exception as e:
+            print(f"Erro ao ler o log: {e}")
+        finally:
+            win32evtlog.CloseEventLog(handle)
+
+        error_events = []
+        for event in events:
+            if event.EventType == 1:  # 1 é o código para eventos de erro
+                error_events.append(event)
+
+        if error_events:
+            error_events.sort(key=lambda event: event.TimeGenerated, reverse=True)
+            error_events = error_events[:3]
+            event_vars = []
+            for error_event in error_events:
+                event_vars.append(error_event.StringInserts[0])
+            hora_error = error_events[0].TimeGenerated.strftime("%d/%m/%Y %H:%M:%S")
+            return tuple(event_vars), hora_error
         else:
-            print(f"Falha ao excluir dados antigos: {response.status_code}")
-    except Exception as e:
-        print(f"Falha ao excluir dados antigos: {e}")
+            print("Nenhum erro encontrado no Log do Ativo .IS")
+            return None, None
 
-# URL do servidor MySQL e credenciais
-mysql_url = "https://ativobi.loca.lt/phpmyadmin/index.php?route=/sql&db=ativopm&table=status"
-mysql_username = "root"
-mysql_password = ""
+    def delete_logs_of_current_company(self, table_name, empresa):
+        try:
+            mysql_url = "xxxxx"
+            query = f"DELETE FROM `ativopm`.`{table_name}` WHERE `Empresa` = '{empresa}'"
+            response = requests.post(mysql_url, data={'sql_query': query},
+                                     auth=(self.mysql_username, self.mysql_password))
+            if response.status_code == 200:
+                print(f"Logs da empresa {empresa} excluídos com sucesso.")
+            else:
+                print(f"Falha ao excluir logs da empresa {empresa}. Código de status: {response.status_code}")
+        except Exception as e:
+            print(f"Falha ao excluir logs da empresa {empresa}: {e}")
 
-# Nome do serviço do Windows
-service_name = "TimeBrokerSvc"
+    def insert_error_logs_to_mysql(self, table_name, error_logs, hora_error, empresa):
+        try:
+            o
+            self.delete_logs_of_current_company(table_name, empresa)
 
-# Empresa (você pode alterar para o valor desejado)
-empresa = "EmpresaXYZ"
+            
+            for i, error_log in enumerate(error_logs):
+               
+                if "A referência de objecto não foi definida como uma instância de um objecto." in error_log:
+                    error_log = error_log.replace(
+                        "A referência de objecto não foi definida como uma instância de um objecto.", "").strip()
 
-# Loop infinito para verificar periodicamente o status do serviço e inserir os dados na tabela
-while True:
-    # Obter status do serviço
-    service_status = get_service_status(service_name)
+                hora_atualizacao = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+               
+                hora_evento_formatada = datetime.strptime(hora_error[i], "%Y-%m-%dT%H:%M:%S").strftime(
+                    "%d/%m/%Y %H:%M:%S")
+               
+                query = f"INSERT INTO `ativopm`.`{table_name}` (`HoraEvento`, `HoraAtualizacao`, `Empresa`, `StatusErroDW`) VALUES ('{hora_evento_formatada}', '{hora_atualizacao}', '{empresa}', '{error_log}')"
+                response = requests.post(self.mysql_url, data={'sql_query': query},
+                                         auth=(self.mysql_username, self.mysql_password))
+                if response.status_code == 200:
+                    print(f"Dados de erro inseridos com sucesso: {error_log}")
+                else:
+                    print(f"Falha ao inserir dados de erro na tabela: {response.status_code}")
+        except Exception as e:
+            print(f"Falha ao inserir dados de erro na tabela: {e}")
 
-    # Obter hora atual
-    current_time = time.strftime("%H:%M:%S")
+    def insert_mysql_data(self, table_name, status_is, status_dg, ultimo_evento, hora_evento, hora_atualizacao):
+        try:
+            query = f"INSERT INTO `ativopm`.`{table_name}` (`StatusIS`, `StatusDG`, `StatusDW`, `HoraEvento`, `HoraAtualizacao`, `Empresa`) VALUES ('{status_is}', '{status_dg}', '{ultimo_evento}', '{hora_evento}', '{hora_atualizacao}', '{self.empresa}')"
+            response = requests.post(self.mysql_url, data={'sql_query': query}, auth=(self.mysql_username, self.mysql_password))
+            if response.status_code == 200:
+                print("Dados inseridos com sucesso!")
+            else:
+                print(f"Falha ao inserir dados na tabela: {response.status_code}")
+        except Exception as e:
+            print(f"Falha ao inserir dados na tabela: {e}")
 
-    # Excluir dados antigos para a empresa específica
-    delete_old_data(mysql_url, mysql_username, mysql_password, "ativopm", "status", empresa)
+    def update_mysql_data(self, table_name, status_is, status_dg, ultimo_evento, hora_evento, hora_atualizacao):
+        try:
+            query = f"UPDATE `ativopm`.`{table_name}` SET `StatusIS` = '{status_is}', `StatusDG` = '{status_dg}', `StatusDW` = '{ultimo_evento}', `HoraEvento` = '{hora_evento}', `HoraAtualizacao` = '{hora_atualizacao}' WHERE `Empresa` = '{self.empresa}'"
+            response = requests.post(self.mysql_url, data={'sql_query': query}, auth=(self.mysql_username, self.mysql_password))
+            if response.status_code == 200:
+                print("Dados atualizados com sucesso!")
+            else:
+                print(f"Falha ao atualizar dados na tabela: {response.status_code}")
+        except Exception as e:
+            print(f"Falha ao atualizar dados na tabela: {e}")
 
-    # Inserir novos dados na tabela do MySQL
-    insert_mysql_data(mysql_url, mysql_username, mysql_password, "ativopm", "status", service_name, service_status, current_time, empresa)
+def main():
+    app = Application()
 
-    # Aguardar 10 segundos antes de verificar novamente
-    time.sleep(10)
+if __name__ == "__main__":
+    main()
