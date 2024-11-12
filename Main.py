@@ -15,7 +15,7 @@ import requests
 
 class Application:
     def __init__(self):
-        self.mysql_password = "xxxxxxxxx"
+        self.mysql_password = "xxxxxxxxxxxx"
         self.monitor_thread = None
         self.monitoring = False
         self.read_config()
@@ -23,7 +23,7 @@ class Application:
 
     def read_config(self):
         try:
-            with open(r"xxxxxxxxx", "r") as f:
+            with open(r"C:\xxxxxxxxxxxxxx\yyyyyyyyyyyyy.txt", "r") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith("Empresa="):
@@ -50,8 +50,8 @@ class Application:
         while self.monitoring:
             log_name = "LogLog"
             ultimo_evento, hora_evento = self.get_last_log_event(log_name)
-            service_status_is = self.get_service_status("ISService")
-            service_status_dg = self.get_service_status("PBIEgwService")
+            service_status_is = self.get_service_status("xxxxxService")
+            service_status_dg = self.get_service_status("YyyyyyyyService")
             horario_atual = datetime.now()
             horario_formatado = horario_atual.strftime("%d/%m/%Y - %H:%M")
             current_time = horario_formatado
@@ -168,12 +168,12 @@ class Application:
             hora_error = [error_event.TimeGenerated for error_event in error_events]
             return tuple(event_vars), hora_error
         else:
-            print("Nenhum erro encontrado no Log do Ativo .IS")
+            print("Nenhum erro encontrado no Log do Serviço XXXXXXXXXXX")
             return None, None
 
     def delete_logs_of_current_company(self, table_name, empresa):
         try:
-            with open(r"xxxxx", "r") as erro:
+            with open(r"C:\xxxxxxxxxxxxxxxxxx\yyyyyyyyyyyyyyyyyyy.txt", "r") as erro:
                 for line in erro:
                     line = line.strip()
                     if line.startswith("EnderecoErro="):
@@ -338,7 +338,7 @@ class Application:
 
                 return username, password, idGroup, idDataSet, idGateway, app_id, tenant_id
 
-            config_path = r"XXXXXX"
+            config_path = r"C:\xxxxxxxxxxxxxxxxxxxxxxxxxx\yyyyyyyyyyyyyyyyyy.txt"
             username, password, idGroup, idDataSet, idGateway, app_id, tenant_id = get_credentials(config_path)
 
             if not username or not password:
